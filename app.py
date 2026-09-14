@@ -4,6 +4,7 @@ import google.generativeai as genai
 import json
 import sqlite3
 import time
+import re
 from datetime import datetime
 
 # --- CONFIG ---
@@ -15,23 +16,16 @@ genai.configure(api_key=API_KEY)
 # --- 100% ACCURATE BUTTONS & CONTRAST ---
 st.markdown("""
 <style>
-    /* 1. Main Background */
     [data-testid="stAppViewContainer"] {
         background: linear-gradient(135deg, #090d16 0%, #1e1b4b 50%, #090d16 100%) !important;
     }
-
-    /* 2. Main Screen Text White */
     section[data-testid="stMain"] * {
         color: #ffffff !important;
     }
-
-    /* Form Container Dark */
     div[data-testid="stForm"] {
         background-color: #1e293b !important;
         border: 1px solid #475569 !important;
     }
-
-    /* 3. Sidebar Pure White Background & Black Text */
     section[data-testid="stSidebar"] {
         background-color: #ffffff !important;
     }
@@ -44,10 +38,6 @@ st.markdown("""
         background-color: #f1f5f9 !important;
         color: #000000 !important;
     }
-
-    /* ================= BUTTON STYLES ================= */
-
-    /* 4. MAIN SCREEN: Generate Quiz Button (Solid Black + White Text) */
     section[data-testid="stMain"] .stButton > button {
         background-color: #000000 !important;
         color: #ffffff !important;
@@ -57,8 +47,6 @@ st.markdown("""
         border-radius: 8px !important;
         padding: 8px 24px !important;
     }
-
-    /* 5. MAIN SCREEN: Submit Quiz Button (Solid Green + Crisp White Text) */
     div[data-testid="stFormSubmitButton"] button, 
     button[kind="primaryFormSubmit"], 
     button[kind="secondaryFormSubmit"] {
@@ -73,8 +61,6 @@ st.markdown("""
     div[data-testid="stFormSubmitButton"] button:hover {
         background-color: #059669 !important;
     }
-
-    /* 6. SIDEBAR: Reset Everything Button (Soft Red Button) */
     section[data-testid="stSidebar"] button {
         background-color: #fee2e2 !important;
         color: #dc2626 !important;
@@ -89,6 +75,7 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
 # --- DATABASE SETUP (SQLITE) ---
 def init_db():
     conn = sqlite3.connect("quiz_data.db")
@@ -170,7 +157,7 @@ with st.sidebar:
     st.markdown(f"""
     <div style="background-color: #f1f5f9; padding: 12px; border-radius: 8px; border: 1px solid #cbd5e1;">
         <span style="color: #475569; font-size: 13px; font-weight: bold;">TOTAL XP EARNED</span>
-        <h2 style="color: #000000 !important; margin: 4px 0 0 0; font-size: 28px;">⭐ {total_xp} XP</h2>
+        <h2 style="color: #000000 !important; margin: 4px 0 0 0; font-size: 26px;">⭐ {total_xp} XP</h2>
     </div>
     """, unsafe_allow_html=True)
     st.write(f"**Rank:** {get_player_rank(total_xp)}")
@@ -212,7 +199,64 @@ with st.sidebar:
 st.title("🤖 AI Quiz Pro")
 st.caption("⚡ Test your knowledge • Earn XP • Watch out for Negative Marking!")
 
-# --- GENERATE QUIZ ---
+# --- CRASH-PROOF QUIZ GENERATOR FUNCTION ---
+def generate_quiz_bulletproof(topic, diff, q_type, lang, num_q):
+    prompt = f"""
+    Return ONLY a valid JSON list of {num_q} questions.
+    Topic: {topic}
+    Difficulty: {diff}
+    Question Type: {q_type}
+    Language: {lang}. All text must be in {lang}.
+
+    Rules:
+    - If 'True / False', Options must be exactly 2 choices.
+    - If 'MCQ', Options must contain 4 distinct choices.
+    - "Answer" must strictly match one of the choices in "Options".
+    - No markdown, no conversation, pure JSON only.
+
+    Format:
+    [
+      {{
+        "Question": "...",
+        "Options": ["Option 1", "Option 2", "Option 3", "Option 4"],
+        "Answer": "Option 1",
+        "Explanation": "..."
+      }}
+    ]
+    """
+    
+    # Models pool for auto-failover
+    models_to_try = ['models/gemini-3.6-flash', 'models/gemini-3.7-flash']
+    
+    for m_name in models_to_try:
+        for attempt in range(2): # 2 tries per model
+            try:
+                model = genai.GenerativeModel(
+                    model_name=m_name,
+                    generation_config={"response_mime_type": "application/json"}
+                )
+                response = model.generate_content(prompt)
+                if not response or not response.text:
+                    time.sleep(1)
+                    continue
+
+                raw = response.text.strip()
+                
+                # Regex Extraction: Extract ONLY JSON array safely
+                json_match = re.search(r'\[.*\]', raw, re.DOTALL)
+                if json_match:
+                    raw = json_match.group(0)
+                
+                parsed = json.loads(raw)
+                if isinstance(parsed, list) and len(parsed) > 0:
+                    return parsed, None
+            except Exception:
+                time.sleep(1)
+                continue
+                
+    return None, "AI Traffic is high. Please wait 10 seconds and click Generate Quiz again."
+
+# --- GENERATE QUIZ BUTTON ---
 if st.button("Generate Quiz 🚀"):
     st.session_state.quiz_data = None
     st.session_state.submitted = False
@@ -222,51 +266,10 @@ if st.button("Generate Quiz 🚀"):
     st.session_state.tutor_explanations = {}
     
     with st.spinner(f"AI generating {diff} {q_type} quiz in {lang}..."):
-        prompt = f"""
-        You are an expert quiz generator. Return ONLY a valid JSON list of {num_q} questions.
-        Topic: {topic}
-        Difficulty: {diff}
-        Question Type: {q_type}
-        Language: {lang}. Strictly output ALL text (questions, options, answers, explanations) in {lang}.
-
-        Rules:
-        - If 'True / False', Options must be exactly 2 choices.
-        - If 'MCQ', Options must contain 4 distinct choices.
-        - Answer MUST exactly match one of the choices in Options.
-        - Strictly NO markdown tags like ```json. Do NOT write conversational text.
-
-        JSON Format:
-        [
-          {{
-            "Question": "Question text here",
-            "Options": ["Option 1", "Option 2", "Option 3", "Option 4"],
-            "Answer": "Option 1",
-            "Explanation": "Explanation text here"
-          }}
-        ]
-        """
+        data, err = generate_quiz_bulletproof(topic, diff, q_type, lang, num_q)
         
-        candidate_models = ['models/gemini-3.6-flash', 'models/gemini-3.7-flash']
-        raw_text = ""
-        
-        for m_name in candidate_models:
-            try:
-                active_model = genai.GenerativeModel(m_name)
-                response = active_model.generate_content(prompt)
-                raw_text = response.text.strip()
-                if raw_text:
-                    break
-            except Exception as e:
-                continue
-
-        if raw_text.startswith("```"):
-            raw_text = raw_text.split("```")[1]
-            if raw_text.startswith("json"):
-                raw_text = raw_text[4:]
-        raw_text = raw_text.strip()
-
-        try:
-            st.session_state.quiz_data = json.loads(raw_text)
+        if data:
+            st.session_state.quiz_data = data
             st.session_state.current_topic = topic
             st.session_state.current_diff = diff
             st.session_state.current_lang = lang
@@ -279,8 +282,8 @@ if st.button("Generate Quiz 🚀"):
                 st.session_state.end_time = None
 
             st.rerun()
-        except Exception as err:
-            st.error(f"Quiz generate nahi ho saka. AI Error: {err}")
+        else:
+            st.warning(f"⚠️ {err}")
 
 # --- DISPLAY QUIZ FORM ---
 if st.session_state.quiz_data and not st.session_state.submitted:
@@ -355,13 +358,12 @@ if st.session_state.submitted and st.session_state.quiz_data:
                     if st.button(f"Deep Explanation & Code Example 💡", key=f"explain_btn_{i}"):
                         with st.spinner("AI Teacher samjha raha hai..."):
                             tutor_prompt = f"""
-                            You are a friendly, encouraging teacher.
+                            You are a friendly teacher.
                             Question: {q['Question']}
-                            User's Wrong Choice: {user_answer}
-                            Actual Correct Answer: {q['Answer']}
+                            User Choice: {user_answer}
+                            Correct Answer: {q['Answer']}
                             
-                            Explain why the user's choice was wrong and break down the correct concept simply.
-                            Provide a very small, clear code or real-world example.
+                            Explain why the user is wrong and explain the right concept clearly with a tiny code snippet.
                             Language: {st.session_state.get('current_lang', 'English')}
                             """
                             try:
@@ -370,11 +372,10 @@ if st.session_state.submitted and st.session_state.quiz_data:
                                 st.session_state.tutor_explanations[i] = t_res.text
                                 st.rerun()
                             except Exception as e:
-                                st.error(f"AI Tutor error: {e}")
+                                st.error(f"AI Tutor busy: {e}")
         st.write("---")
         
     accuracy = (score / total) * 100
-    
     wrong_count = total - score
     base_xp = score * 10
     penalty_xp = (wrong_count // 2) * 10
