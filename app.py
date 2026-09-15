@@ -10,7 +10,7 @@ from datetime import datetime
 # --- CONFIG ---
 st.set_page_config(page_title="AI Quiz Pro", page_icon="⚡", layout="wide")
 
-API_KEY = "AQ.Ab8RN6IPKBjdyvM_3ADDwc4uHppx5ES2blFHzjcJaUZ1tLEPVA"
+API_KEY = st.secrets["GEMINI_API_KEY"]
 genai.configure(api_key=API_KEY)
 
 # --- 100% ACCURATE BUTTONS & CONTRAST ---
