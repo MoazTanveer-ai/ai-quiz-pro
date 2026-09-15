@@ -199,31 +199,34 @@ with st.sidebar:
 st.title("🤖 AI Quiz Pro")
 st.caption("⚡ Test your knowledge • Earn XP • Watch out for Negative Marking!")
 
-# --- CRASH-PROOF QUIZ GENERATOR FUNCTION ---
+# --- ASLI ERROR CHECK KARNE WALA FUNCTION ---
 def generate_quiz_bulletproof(topic, diff, q_type, lang, num_q):
-    prompt = f"""
-    Return ONLY a valid JSON list of {num_q} questions.
-    Topic: {topic}
-    Difficulty: {diff}
-    Question Type: {q_type}
-    Language: {lang}. All text must be in {lang}.
-
-    Rules:
-    - If 'True / False', Options must be exactly 2 choices.
-    - If 'MCQ', Options must contain 4 distinct choices.
-    - "Answer" must strictly match one of the choices in "Options".
-    - No markdown, no conversation, pure JSON only.
-
-    Format:
-    [
-      {{
-        "Question": "...",
-        "Options": ["Option 1", "Option 2", "Option 3", "Option 4"],
-        "Answer": "Option 1",
-        "Explanation": "..."
-      }}
-    ]
-    """
+    prompt = f"Generate {num_q} {diff} level {q_type} quiz questions on {topic} in {lang}. Return pure JSON list with keys: Question, Options, Answer, Explanation."
+    
+    last_error = "Unknown error"
+    models_to_try = ['models/gemini-3.6-flash', 'models/gemini-3.7-flash']
+    
+    for m_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(m_name)
+            response = model.generate_content(prompt)
+            raw = response.text.strip()
+            
+            # Clean markdown
+            if "```" in raw:
+                raw = re.sub(r'```json\s*|\s*```', '', raw).strip()
+                
+            json_match = re.search(r'\[.*\]', raw, re.DOTALL)
+            if json_match:
+                raw = json_match.group(0)
+                
+            parsed = json.loads(raw)
+            return parsed, None
+        except Exception as e:
+            last_error = str(e)
+            continue
+            
+    return None, last_error
     
     # Models pool for auto-failover
     models_to_try = ['models/gemini-3.6-flash', 'models/gemini-3.7-flash']
