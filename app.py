@@ -10,7 +10,12 @@ from datetime import datetime
 # --- CONFIG ---
 st.set_page_config(page_title="AI Quiz Pro", page_icon="⚡", layout="wide")
 
-API_KEY = st.secrets["GEMINI_API_KEY"]
+# --- SECURE API KEY CONFIGURATION ---
+try:
+    API_KEY = st.secrets["GEMINI_API_KEY"]
+except Exception:
+    API_KEY = "AIzaSy_FALLBACK_KEY"
+
 genai.configure(api_key=API_KEY)
 
 # --- 100% ACCURATE BUTTONS & CONTRAST ---
@@ -123,13 +128,13 @@ def get_history_and_stats():
 
 def get_player_rank(xp):
     if xp < 50:
-        return "🥉 Novice (Lvl 1)"
+        return "🥉 Novice (Level 1)"
     elif xp < 150:
-        return "🥈 Scholar (Lvl 2)"
+        return "🥈 Scholar (Level 2)"
     elif xp < 300:
-        return "🥇 Master (Lvl 3)"
+        return "🥇 Master (Level 3)"
     else:
-        return "👑 Grandmaster (Lvl 4)"
+        return "👑 Grandmaster (Level 4)"
 
 init_db()
 
@@ -199,65 +204,61 @@ with st.sidebar:
 st.title("🤖 AI Quiz Pro")
 st.caption("⚡ Test your knowledge • Earn XP • Watch out for Negative Marking!")
 
-# --- ASLI ERROR CHECK KARNE WALA FUNCTION ---
+# --- ROBUST QUIZ GENERATOR FUNCTION ---
 def generate_quiz_bulletproof(topic, diff, q_type, lang, num_q):
-    prompt = f"Generate {num_q} {diff} level {q_type} quiz questions on {topic} in {lang}. Return pure JSON list with keys: Question, Options, Answer, Explanation."
+    prompt = f"""
+    Return ONLY a valid JSON list of {num_q} questions.
+    Topic: {topic}
+    Difficulty: {diff}
+    Question Type: {q_type}
+    Language: {lang}. All questions, options, and explanations must strictly be generated in {lang}.
+
+    Rules:
+    - If 'True / False', Options must be exactly 2 choices.
+    - If 'MCQ', Options must contain 4 distinct choices.
+    - "Answer" must strictly match one of the choices in "Options".
+    - No markdown formatting, no conversation, pure JSON list only.
+
+    Format:
+    [
+      {{
+        "Question": "Question text here",
+        "Options": ["Option 1", "Option 2", "Option 3", "Option 4"],
+        "Answer": "Option 1",
+        "Explanation": "Explanation text here"
+      }}
+    ]
+    """
     
-    last_error = "Unknown error"
     models_to_try = ['models/gemini-3.6-flash', 'models/gemini-3.7-flash']
+    last_err = ""
     
     for m_name in models_to_try:
         try:
             model = genai.GenerativeModel(m_name)
             response = model.generate_content(prompt)
+            if not response or not response.text:
+                continue
+
             raw = response.text.strip()
             
-            # Clean markdown
+            # Remove Markdown if present
             if "```" in raw:
                 raw = re.sub(r'```json\s*|\s*```', '', raw).strip()
                 
+            # Regex extraction for safety
             json_match = re.search(r'\[.*\]', raw, re.DOTALL)
             if json_match:
                 raw = json_match.group(0)
                 
             parsed = json.loads(raw)
-            return parsed, None
+            if isinstance(parsed, list) and len(parsed) > 0:
+                return parsed, None
         except Exception as e:
-            last_error = str(e)
+            last_err = str(e)
             continue
             
-    return None, last_error
-    
-    # Models pool for auto-failover
-    models_to_try = ['models/gemini-3.6-flash', 'models/gemini-3.7-flash']
-    
-    for m_name in models_to_try:
-        for attempt in range(2): # 2 tries per model
-            try:
-                model = genai.GenerativeModel(
-                    model_name=m_name,
-                    generation_config={"response_mime_type": "application/json"}
-                )
-                response = model.generate_content(prompt)
-                if not response or not response.text:
-                    time.sleep(1)
-                    continue
-
-                raw = response.text.strip()
-                
-                # Regex Extraction: Extract ONLY JSON array safely
-                json_match = re.search(r'\[.*\]', raw, re.DOTALL)
-                if json_match:
-                    raw = json_match.group(0)
-                
-                parsed = json.loads(raw)
-                if isinstance(parsed, list) and len(parsed) > 0:
-                    return parsed, None
-            except Exception:
-                time.sleep(1)
-                continue
-                
-    return None, "AI Traffic is high. Please wait 10 seconds and click Generate Quiz again."
+    return None, last_err if last_err else "AI service is currently busy. Please wait a moment and try again."
 
 # --- GENERATE QUIZ BUTTON ---
 if st.button("Generate Quiz 🚀"):
@@ -291,10 +292,11 @@ if st.button("Generate Quiz 🚀"):
 # --- DISPLAY QUIZ FORM ---
 if st.session_state.quiz_data and not st.session_state.submitted:
     
+    # Live JavaScript Countdown Timer
     if st.session_state.end_time:
         remaining_secs = int(st.session_state.end_time - time.time())
         if remaining_secs <= 0:
-            st.error("⏰ Time up ho gaya hai! Neeche Submit button dabayein.")
+            st.error("⏰ Time has expired! Please submit your quiz below.")
         else:
             timer_code = f"""
             <div style="background: rgba(239, 68, 68, 0.25); border: 2px solid #ef4444; border-radius: 8px; padding: 10px; text-align: center; font-family: sans-serif;">
@@ -311,7 +313,7 @@ if st.session_state.quiz_data and not st.session_state.submitted:
                     if (timeLeft <= 0) {{
                         clearInterval(timerInterval);
                         display.innerText = "00:00 (Time's Up!)";
-                        alert("⏰ Time khatam ho gaya! Quiz submit karein.");
+                        alert("⏰ Time's up! Please submit your quiz.");
                     }}
                     timeLeft--;
                 }}, 1000);
@@ -330,7 +332,7 @@ if st.session_state.quiz_data and not st.session_state.submitted:
         if submit_btn:
             all_answered = all(st.session_state.get(f"q_{i}") is not None for i in range(len(st.session_state.quiz_data)))
             if not all_answered:
-                st.warning("⚠️ Sabhi sawalon ke jawab select karein!")
+                st.warning("⚠️ Please select answers for all questions before submitting!")
             else:
                 if st.session_state.start_time:
                     st.session_state.time_taken = int(time.time() - st.session_state.start_time)
@@ -354,19 +356,20 @@ if st.session_state.submitted and st.session_state.quiz_data:
         else:
             st.error(f"**Q{i+1}: {q['Question']}**\n\n❌ **Your Answer:** {user_answer}\n\n✅ **Correct Answer:** {q['Answer']}\n\n💡 *{q['Explanation']}*")
             
-            with st.expander(f"🤖 Samajh nahi aaya? AI Tutor se poocho (Q{i+1})"):
+            # AI Doubt Solver
+            with st.expander(f"🤖 Need Help? Ask AI Tutor (Q{i+1})"):
                 if i in st.session_state.tutor_explanations:
                     st.info(st.session_state.tutor_explanations[i])
                 else:
                     if st.button(f"Deep Explanation & Code Example 💡", key=f"explain_btn_{i}"):
-                        with st.spinner("AI Teacher samjha raha hai..."):
+                        with st.spinner("AI Tutor is preparing explanation..."):
                             tutor_prompt = f"""
-                            You are a friendly teacher.
+                            You are a friendly, expert computer science teacher.
                             Question: {q['Question']}
                             User Choice: {user_answer}
                             Correct Answer: {q['Answer']}
                             
-                            Explain why the user is wrong and explain the right concept clearly with a tiny code snippet.
+                            Explain why the user's choice was incorrect and teach the right concept simply. Provide a short, practical code snippet.
                             Language: {st.session_state.get('current_lang', 'English')}
                             """
                             try:
@@ -375,7 +378,7 @@ if st.session_state.submitted and st.session_state.quiz_data:
                                 st.session_state.tutor_explanations[i] = t_res.text
                                 st.rerun()
                             except Exception as e:
-                                st.error(f"AI Tutor busy: {e}")
+                                st.error(f"AI Tutor is busy: {e}")
         st.write("---")
         
     accuracy = (score / total) * 100
@@ -404,13 +407,13 @@ if st.session_state.submitted and st.session_state.quiz_data:
     col4.metric(label="Time Taken ⏱️", value=time_str)
     
     if penalty_xp > 0:
-        st.warning(f"⚠️ **Negative Marking:** {wrong_count} sawal galat hone par **-{penalty_xp} XP** ki katauti hui! Net XP: **{net_xp} XP**")
+        st.warning(f"⚠️ **Penalty Applied:** -{penalty_xp} XP deducted for {wrong_count} incorrect answers. Net XP: **{net_xp} XP**")
     else:
-        st.success(f"🌟 **Zabardast!** Koi penalty nahi lagi. Net XP: **+{net_xp} XP**")
+        st.success(f"🌟 **Well Done!** No penalties applied. Net XP: **+{net_xp} XP**")
 
     if score == total:
         st.balloons()
-        st.success("🎉 Perfect Score! Kamaal kar diya!")
+        st.success("🎉 Perfect Score! Outstanding Performance!")
 
     if st.button("Take Another Quiz 🔄"):
         st.session_state.quiz_data = None
