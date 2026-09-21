@@ -171,9 +171,9 @@ if 'tutor_explanations' not in st.session_state:
 with st.sidebar:
     st.header("👤 Player Profile")
     
-    player_name = st.text_input("Enter Your Name:", value="Moaz", help="Change name to create your unique profile!").strip()
+    player_name = st.text_input("Enter Your Name:", value="", placeholder="e.g. Ali, Sara, John...").strip()
     if not player_name:
-        player_name = "Player"
+        player_name = "Guest"
         
     recent_history, total_xp, score_percentages = get_player_stats(player_name)
     
