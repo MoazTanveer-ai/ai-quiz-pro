@@ -14,7 +14,7 @@ st.set_page_config(page_title="AI Quiz Pro", page_icon="⚡", layout="wide")
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
 except Exception:
-    API_KEY = "AIzaSy_FALLBACK_KEY"
+    API_KEY = "AIzaSy_YOUR_API_KEY_HERE"
 
 genai.configure(api_key=API_KEY)
 
@@ -81,39 +81,44 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- DATABASE SETUP (SQLITE) ---
+# --- DATABASE SETUP (SQLITE WITH MULTI-PLAYER SUPPORT) ---
 def init_db():
     conn = sqlite3.connect("quiz_data.db")
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS quiz_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    player_name TEXT,
                     topic TEXT,
                     diff TEXT,
                     score TEXT,
                     xp INTEGER,
                     date TEXT
                 )''')
+    c.execute("PRAGMA table_info(quiz_history)")
+    cols = [info[1] for info in c.fetchall()]
+    if "player_name" not in cols:
+        c.execute("ALTER TABLE quiz_history ADD COLUMN player_name TEXT DEFAULT 'Player'")
     conn.commit()
     conn.close()
 
-def save_quiz_record(topic, diff, score, xp):
+def save_quiz_record(player, topic, diff, score, xp):
     conn = sqlite3.connect("quiz_data.db")
     c = conn.cursor()
-    c.execute("INSERT INTO quiz_history (topic, diff, score, xp, date) VALUES (?, ?, ?, ?, ?)",
-              (topic, diff, score, xp, datetime.now().strftime("%d %b, %H:%M")))
+    c.execute("INSERT INTO quiz_history (player_name, topic, diff, score, xp, date) VALUES (?, ?, ?, ?, ?, ?)",
+              (player, topic, diff, score, xp, datetime.now().strftime("%d %b, %H:%M")))
     conn.commit()
     conn.close()
 
-def get_history_and_stats():
+def get_player_stats(player):
     conn = sqlite3.connect("quiz_data.db")
     c = conn.cursor()
-    c.execute("SELECT topic, diff, score, xp, date FROM quiz_history ORDER BY id DESC LIMIT 5")
+    c.execute("SELECT topic, diff, score, xp, date FROM quiz_history WHERE player_name = ? ORDER BY id DESC LIMIT 5", (player,))
     history = c.fetchall()
-    c.execute("SELECT SUM(xp) FROM quiz_history")
+    c.execute("SELECT SUM(xp) FROM quiz_history WHERE player_name = ?", (player,))
     total_xp = c.fetchone()[0] or 0
     total_xp = max(0, total_xp)
 
-    c.execute("SELECT score FROM quiz_history ORDER BY id ASC")
+    c.execute("SELECT score FROM quiz_history WHERE player_name = ? ORDER BY id ASC", (player,))
     all_scores_raw = c.fetchall()
     score_percentages = []
     for (s,) in all_scores_raw:
@@ -125,6 +130,14 @@ def get_history_and_stats():
             
     conn.close()
     return history, total_xp, score_percentages
+
+def get_leaderboard():
+    conn = sqlite3.connect("quiz_data.db")
+    c = conn.cursor()
+    c.execute("SELECT player_name, SUM(xp) as total_xp FROM quiz_history GROUP BY player_name ORDER BY total_xp DESC LIMIT 3")
+    top_players = c.fetchall()
+    conn.close()
+    return top_players
 
 def get_player_rank(xp):
     if xp < 50:
@@ -154,14 +167,19 @@ if 'saved_to_db' not in st.session_state:
 if 'tutor_explanations' not in st.session_state:
     st.session_state.tutor_explanations = {}
 
-recent_history, total_xp, score_percentages = get_history_and_stats()
-
-# --- SIDEBAR (SETTINGS & STATS) ---
+# --- SIDEBAR (SETTINGS & PERSONAL PLAYER PROFILE) ---
 with st.sidebar:
     st.header("👤 Player Profile")
+    
+    player_name = st.text_input("Enter Your Name:", value="Moaz", help="Change name to create your unique profile!").strip()
+    if not player_name:
+        player_name = "Player"
+        
+    recent_history, total_xp, score_percentages = get_player_stats(player_name)
+    
     st.markdown(f"""
-    <div style="background-color: #f1f5f9; padding: 12px; border-radius: 8px; border: 1px solid #cbd5e1;">
-        <span style="color: #475569; font-size: 13px; font-weight: bold;">TOTAL XP EARNED</span>
+    <div style="background-color: #f1f5f9; padding: 12px; border-radius: 8px; border: 1px solid #cbd5e1; margin-top: 10px;">
+        <span style="color: #475569; font-size: 13px; font-weight: bold;">{player_name.upper()}'S TOTAL XP</span>
         <h2 style="color: #000000 !important; margin: 4px 0 0 0; font-size: 26px;">⭐ {total_xp} XP</h2>
     </div>
     """, unsafe_allow_html=True)
@@ -170,10 +188,20 @@ with st.sidebar:
     if len(score_percentages) >= 2:
         st.write("📈 **Score Progress (%)**")
         st.line_chart(score_percentages)
-    
+
+    leaders = get_leaderboard()
+    if leaders and len(leaders) > 0:
+        st.write("---")
+        st.header("🏆 Top Players")
+        for rank, (name, xp) in enumerate(leaders, 1):
+            badge = "🥇" if rank == 1 else ("🥈" if rank == 2 else "🥉")
+            st.caption(f"{badge} **{name}**: {xp or 0} XP")
+            
     st.write("---")
     st.header("⚙️ Quiz Settings")
-    topic = st.text_input("Topic:", "Python Programming")
+    
+    topic = st.text_input("Topic:", placeholder="e.g. World History, Space, Cricket, AI...")
+    
     num_q = st.slider("Number of Questions:", 1, 10, 4)
     diff = st.selectbox("Difficulty:", ["Easy", "Medium", "Hard"])
     q_type = st.selectbox("Question Type:", ["MCQ (4 Options)", "True / False", "Mixed"])
@@ -191,33 +219,33 @@ with st.sidebar:
         st.rerun()
 
     st.write("---")
-    st.header("📜 Recent Quizzes")
+    st.header(f"📜 {player_name}'s Recent Quizzes")
     if recent_history:
         for item in recent_history:
             xp_sign = f"+{item[3]}" if item[3] >= 0 else f"{item[3]}"
             st.caption(f"**{item[0]}** ({item[1]}) • {item[4]}")
             st.text(f"Score: {item[2]} | {xp_sign} XP")
     else:
-        st.caption("No quiz records yet.")
+        st.caption("No quiz records yet for this profile.")
 
 # --- MAIN UI ---
 st.title("🤖 AI Quiz Pro")
-st.caption("⚡ Test your knowledge • Earn XP • Watch out for Negative Marking!")
+st.caption(f"⚡ Welcome {player_name}! Test your knowledge • Compete on the Leaderboard • Watch out for Negative Marking!")
 
-# --- ROBUST QUIZ GENERATOR FUNCTION ---
+# --- HIGH SPEED 3.8 FLASH QUIZ GENERATOR FUNCTION ---
 def generate_quiz_bulletproof(topic, diff, q_type, lang, num_q):
     prompt = f"""
     Return ONLY a valid JSON list of {num_q} questions.
     Topic: {topic}
     Difficulty: {diff}
     Question Type: {q_type}
-    Language: {lang}. All questions, options, and explanations must strictly be generated in {lang}.
+    Language: {lang}. All text must be generated in {lang}.
 
     Rules:
     - If 'True / False', Options must be exactly 2 choices.
     - If 'MCQ', Options must contain 4 distinct choices.
     - "Answer" must strictly match one of the choices in "Options".
-    - No markdown formatting, no conversation, pure JSON list only.
+    - No markdown formatting, pure JSON list only.
 
     Format:
     [
@@ -230,7 +258,13 @@ def generate_quiz_bulletproof(topic, diff, q_type, lang, num_q):
     ]
     """
     
-    models_to_try = ['models/gemini-3.6-flash', 'models/gemini-3.7-flash']
+    # Priority on Gemini 3.8 Flash (your verified active model)
+    models_to_try = [
+        'models/gemini-3.8-flash',
+        'models/gemini-3.7-flash',
+        'models/gemini-3.6-flash',
+        'gemini-1.5-flash'
+    ]
     last_err = ""
     
     for m_name in models_to_try:
@@ -241,12 +275,9 @@ def generate_quiz_bulletproof(topic, diff, q_type, lang, num_q):
                 continue
 
             raw = response.text.strip()
-            
-            # Remove Markdown if present
             if "```" in raw:
                 raw = re.sub(r'```json\s*|\s*```', '', raw).strip()
                 
-            # Regex extraction for safety
             json_match = re.search(r'\[.*\]', raw, re.DOTALL)
             if json_match:
                 raw = json_match.group(0)
@@ -258,36 +289,39 @@ def generate_quiz_bulletproof(topic, diff, q_type, lang, num_q):
             last_err = str(e)
             continue
             
-    return None, last_err if last_err else "AI service is currently busy. Please wait a moment and try again."
+    return None, last_err if last_err else "AI service is currently busy. Please try again in a few seconds."
 
 # --- GENERATE QUIZ BUTTON ---
 if st.button("Generate Quiz 🚀"):
-    st.session_state.quiz_data = None
-    st.session_state.submitted = False
-    st.session_state.saved_to_db = False
-    st.session_state.end_time = None
-    st.session_state.time_taken = 0
-    st.session_state.tutor_explanations = {}
-    
-    with st.spinner(f"AI generating {diff} {q_type} quiz in {lang}..."):
-        data, err = generate_quiz_bulletproof(topic, diff, q_type, lang, num_q)
+    if not topic.strip():
+        st.warning("⚠️ Please enter a quiz topic in the sidebar first!")
+    else:
+        st.session_state.quiz_data = None
+        st.session_state.submitted = False
+        st.session_state.saved_to_db = False
+        st.session_state.end_time = None
+        st.session_state.time_taken = 0
+        st.session_state.tutor_explanations = {}
         
-        if data:
-            st.session_state.quiz_data = data
-            st.session_state.current_topic = topic
-            st.session_state.current_diff = diff
-            st.session_state.current_lang = lang
-            st.session_state.start_time = time.time()
+        with st.spinner(f"⚡ High-speed AI generating {diff} {q_type} quiz in {lang}..."):
+            data, err = generate_quiz_bulletproof(topic, diff, q_type, lang, num_q)
             
-            if timer_option != "No Timer":
-                mins = int(timer_option.split()[0])
-                st.session_state.end_time = time.time() + (mins * 60)
-            else:
-                st.session_state.end_time = None
+            if data:
+                st.session_state.quiz_data = data
+                st.session_state.current_topic = topic
+                st.session_state.current_diff = diff
+                st.session_state.current_lang = lang
+                st.session_state.start_time = time.time()
+                
+                if timer_option != "No Timer":
+                    mins = int(timer_option.split()[0])
+                    st.session_state.end_time = time.time() + (mins * 60)
+                else:
+                    st.session_state.end_time = None
 
-            st.rerun()
-        else:
-            st.warning(f"⚠️ {err}")
+                st.rerun()
+            else:
+                st.error(f"⚠️ {err}")
 
 # --- DISPLAY QUIZ FORM ---
 if st.session_state.quiz_data and not st.session_state.submitted:
@@ -356,7 +390,6 @@ if st.session_state.submitted and st.session_state.quiz_data:
         else:
             st.error(f"**Q{i+1}: {q['Question']}**\n\n❌ **Your Answer:** {user_answer}\n\n✅ **Correct Answer:** {q['Answer']}\n\n💡 *{q['Explanation']}*")
             
-            # AI Doubt Solver
             with st.expander(f"🤖 Need Help? Ask AI Tutor (Q{i+1})"):
                 if i in st.session_state.tutor_explanations:
                     st.info(st.session_state.tutor_explanations[i])
@@ -364,16 +397,16 @@ if st.session_state.submitted and st.session_state.quiz_data:
                     if st.button(f"Deep Explanation & Code Example 💡", key=f"explain_btn_{i}"):
                         with st.spinner("AI Tutor is preparing explanation..."):
                             tutor_prompt = f"""
-                            You are a friendly, expert computer science teacher.
+                            You are a friendly computer science teacher.
                             Question: {q['Question']}
                             User Choice: {user_answer}
                             Correct Answer: {q['Answer']}
                             
-                            Explain why the user's choice was incorrect and teach the right concept simply. Provide a short, practical code snippet.
+                            Explain why the user's choice was incorrect and teach the right concept simply. Provide a short code snippet.
                             Language: {st.session_state.get('current_lang', 'English')}
                             """
                             try:
-                                tutor_model = genai.GenerativeModel('models/gemini-3.6-flash')
+                                tutor_model = genai.GenerativeModel('models/gemini-3.8-flash')
                                 t_res = tutor_model.generate_content(tutor_prompt)
                                 st.session_state.tutor_explanations[i] = t_res.text
                                 st.rerun()
@@ -389,6 +422,7 @@ if st.session_state.submitted and st.session_state.quiz_data:
 
     if not st.session_state.saved_to_db:
         save_quiz_record(
+            player_name,
             st.session_state.get('current_topic', 'General'),
             st.session_state.get('current_diff', 'Medium'),
             f"{score}/{total}",
